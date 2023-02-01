@@ -25,24 +25,31 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let args = env::args();
     let (paths, recursive, delete, verbose) = parse_args(clap, args);
 
-    let mut all_files: Vec<PathBuf> = Vec::new();
+    let mut all_filepaths: Vec<PathBuf> = Vec::new();
 
     for path in paths {
         let path_metadata = fs::metadata(&path);
         if path_metadata.is_err() {
-            all_files.push(path);
+            all_filepaths.push(path);
             continue;
         }
         if path_metadata.unwrap().is_dir() {
-            let mut files = traverse_dir(&path, recursive).unwrap();
-            all_files.append(&mut files);
+            match traverse_dir(&path, recursive) {
+                Ok(mut filepaths) => all_filepaths.append(&mut filepaths),
+                Err(e) => {
+                    println!(
+                        "Error when traversing directory \"{}\". Error: {e}",
+                        path.to_str().unwrap_or_default()
+                    )
+                }
+            }
         } else {
-            all_files.push(path);
+            all_filepaths.push(path);
         }
     }
 
     if verbose {
-        let all_filenames_str = all_files
+        let all_filepaths_str = all_filepaths
             .iter()
             .map(|val| format!("{:?}", val.as_os_str()))
             .collect::<Vec<String>>()
@@ -53,23 +60,32 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             "check hashes for"
         };
         println!(
-            "All file paths collected: {all_filenames_str}.\nAttempting to {action} all files."
+            "All file paths collected: {all_filepaths_str}.\nAttempting to {action} all files."
         );
     }
 
-    if all_files.len() > 10 {
-        many_files_warning(all_files.len());
+    if all_filepaths.len() > 10 {
+        many_files_warning(all_filepaths.len());
     }
 
     let mut result_strings: Vec<String> = Vec::new();
 
-    for file in all_files {
+    for filepath in all_filepaths {
         let status = if delete {
-            delete_xattrs(&file)
+            Ok(delete_xattrs(&filepath))
         } else {
-            check(&file, verbose)
+            check(&filepath, verbose)
         };
-        result_strings.push(format!("File \"{}\": {}", &file.to_str().unwrap(), status));
+
+        let filepath_str = filepath.to_str().unwrap_or_default();
+        match status {
+            Ok(file_status) => {
+                result_strings.push(format!("File \"{filepath_str}\": {file_status}"));
+            }
+            Err(err) => {
+                println!("Operating on file \"{filepath_str}\" caused an error: {err}");
+            }
+        }
     }
 
     if verbose {
@@ -85,7 +101,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             "Warning: bitwrought is about to check or write hashes for {num_files} files.\nType \"Yes\" to continue, or press any key to abort."
         );
         let mut line = String::new();
-        std::io::stdin().read_line(&mut line).unwrap();
+        std::io::stdin()
+            .read_line(&mut line)
+            .expect("Sorry, error parsing your response!");
 
         if !&line.eq("Yes\n") {
             exit(0);
@@ -94,6 +112,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[derive(PartialEq, Debug)]
 enum FileStatus {
     DoesNotExist,
     BadPermissions,
@@ -114,27 +133,25 @@ impl Display for FileStatus {
     }
 }
 
-fn check(path: &Path, verbose: bool) -> FileStatus {
-    let file = PathBuf::from(path);
-    let metadata = match fs::metadata(&file) {
+fn check(path: &Path, verbose: bool) -> Result<FileStatus, Box<dyn Error>> {
+    let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
-        Err(_) => return FileStatus::DoesNotExist,
+        Err(_) => return Ok(FileStatus::DoesNotExist),
     };
 
     if metadata.permissions().readonly() {
-        return FileStatus::BadPermissions;
+        return Ok(FileStatus::BadPermissions);
     }
 
-    let saved_hash = xattr::get(file, HASH_XATTR).unwrap().unwrap_or_default();
-    let saved_hash = std::str::from_utf8(&saved_hash).unwrap();
+    let saved_hash = get_xattr(path, HASH_XATTR);
+
     if saved_hash.is_empty() {
-        save_file_hash(path).unwrap();
-        FileStatus::Ok(String::from(
+        save_file_hash(path)?;
+        Ok(FileStatus::Ok(String::from(
             "File has no hash saved. Calculating and storing now.",
-        ))
+        )))
     } else {
-        let mut file = fs::File::open(path).unwrap();
-        let hash = calculate_file_digest_buffered(&mut file).unwrap();
+        let hash = calculate_file_digest_buffered(path)?;
         if verbose {
             let path_str = path.display();
             println!("File \"{path_str}\" hash previously saved: {saved_hash}");
@@ -142,20 +159,12 @@ fn check(path: &Path, verbose: bool) -> FileStatus {
         }
 
         if saved_hash == hash {
-            FileStatus::Ok(String::from("File hash matches previously saved result."))
+            Ok(FileStatus::Ok(String::from(
+                "File hash matches previously saved result.",
+            )))
         } else {
-            let saved_timestamp = xattr::get(path, MODIFIED_XATTR)
-                .unwrap()
-                .unwrap_or_default();
-            let saved_timestamp = String::from_utf8(saved_timestamp).unwrap();
-            let metadata = fs::metadata(path).unwrap();
-            let last_modified = metadata
-                .modified()
-                .unwrap()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .to_string();
+            let saved_timestamp = get_xattr(path, MODIFIED_XATTR);
+            let last_modified = get_last_modified(path)?;
 
             if verbose {
                 let path_str = path.display();
@@ -164,11 +173,10 @@ fn check(path: &Path, verbose: bool) -> FileStatus {
             }
 
             if last_modified > saved_timestamp {
-                // xattr::set(path, MODIFIED_XATTR, last_modified.as_bytes()).unwrap();
-                save_file_hash(path).unwrap();
-                FileStatus::Modified
+                save_file_hash(path)?;
+                Ok(FileStatus::Modified)
             } else {
-                FileStatus::Rotten
+                Ok(FileStatus::Rotten)
             }
         }
     }
@@ -197,8 +205,6 @@ fn delete_xattrs(path: &Path) -> FileStatus {
     }
 }
 
-// modify file modified time: `touch -t 202301010000 fizz`
-
 fn clap_setup() -> Command {
     Command::new("bitwrought")
         .version("0.1")
@@ -208,7 +214,7 @@ fn clap_setup() -> Command {
             "Bitwrought will look at each file passed to it, and checks if it has a hash saved.
 If it does, it recalculates the file's hash and compares it to the saved one.
 If not, it calculates a new one and saves it to the file in a custom xattr.
-If passed a directory, bitwrought will check each file with a shallow traversal:
+If passed a directory, bitwrought will check each file with a shallow traversal.
 it does not check directories within the directory passed unless the --recursive option is used.",
         )
         .arg(
@@ -259,8 +265,9 @@ where
     (paths, recursive, delete, verbose)
 }
 
-fn calculate_file_digest_buffered<T: Read + Seek>(file: &mut T) -> Result<String, Box<dyn Error>> {
-    file.seek(SeekFrom::Start(0)).unwrap();
+fn calculate_file_digest_buffered(path: &Path) -> Result<String, Box<dyn Error>> {
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(0))?;
     let mut buffer = [0u8; BUFFER_SIZE];
     let mut hasher = Sha256::new();
 
@@ -274,20 +281,12 @@ fn calculate_file_digest_buffered<T: Read + Seek>(file: &mut T) -> Result<String
 }
 
 fn save_file_hash(path: &Path) -> Result<(), Box<dyn Error>> {
-    let mut file = fs::File::open(path).unwrap();
-    let hash = calculate_file_digest_buffered(&mut file).unwrap();
-    xattr::set(path, HASH_XATTR, hash.as_bytes()).unwrap();
-    let time = xattr::get(path, MODIFIED_XATTR).unwrap();
-    if time.is_none() {
-        let metadata = fs::metadata(path).unwrap();
-        let last_modified = metadata
-            .modified()
-            .unwrap()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .to_string();
-        xattr::set(path, MODIFIED_XATTR, last_modified.as_bytes()).unwrap();
+    let hash = calculate_file_digest_buffered(path)?;
+    xattr::set(path, HASH_XATTR, hash.as_bytes())?;
+    let time = get_xattr(path, MODIFIED_XATTR);
+    if time.is_empty() {
+        let last_modified = get_last_modified(path)?;
+        xattr::set(path, MODIFIED_XATTR, last_modified.as_bytes())?;
     }
     Ok(())
 }
@@ -298,13 +297,27 @@ fn traverse_dir(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Box<dyn Err
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() && recursive {
-            let mut dir_files = traverse_dir(&path, true).unwrap();
+            let mut dir_files = traverse_dir(&path, true)?;
             all_files.append(&mut dir_files);
         } else if !path.is_dir() && !should_ignore(&path) {
             all_files.push(entry.path());
         }
     }
     Ok(all_files)
+}
+
+fn get_xattr(path: &Path, key: &str) -> String {
+    let xattr_bytes = xattr::get(path, key).unwrap_or(Some(Vec::new()));
+    let xattr_bytes = xattr_bytes.unwrap_or_default();
+    String::from_utf8(xattr_bytes).unwrap_or_default()
+}
+
+fn get_last_modified(path: &Path) -> Result<String, Box<dyn Error>> {
+    Ok(fs::metadata(path)?
+        .modified()?
+        .duration_since(UNIX_EPOCH)?
+        .as_secs()
+        .to_string())
 }
 
 fn should_ignore(path: &Path) -> bool {
@@ -317,8 +330,7 @@ mod tests {
     use rand::Rng;
     use std::fs;
     use std::io::{BufRead, BufReader, BufWriter, Write};
-    use std::path::Path;
-    use tempfile::{tempfile, NamedTempFile};
+    use tempfile::{tempdir, NamedTempFile};
 
     //1. test that arguments are parsed correctly (this will be a couple of tests)
     #[test]
@@ -380,81 +392,154 @@ mod tests {
         }
     }
 
-    //2. test that different methods of calculating the hash all agree on a test file
+    //test that different methods of calculating the hash all agree on a test file
     #[test]
     fn test_buffered_file_read_hash() {
-        let mut file = tempfile().expect("cannot create tempfile in test");
-        write_random_file(256, &mut file).expect("cant write to file in test");
+        let mut file = NamedTempFile::new().unwrap();
+        write_random_file(256, &mut file).unwrap();
 
-        let buffered = calculate_file_digest_buffered(&mut file).expect("cant hash file");
-        let non_buffered = calculate_file_digest(&mut file).expect("cant hash file");
-        let buf_reader = calculate_file_digest_buf_reader(&mut file).expect("cant hash file");
+        let buffered = calculate_file_digest_buffered(file.path()).unwrap();
+        let non_buffered = calculate_file_digest(&mut file).unwrap();
+        let buf_reader = calculate_file_digest_buf_reader(&mut file).unwrap();
 
         assert_eq!(buffered, non_buffered);
         assert_eq!(non_buffered, buf_reader);
     }
 
-    //3. test that two different files have different hashes
+    //test that two different files have different hashes
     #[test]
     fn test_different_files_hash() {
-        let mut f1 = tempfile().expect("cannot create tempfile in test");
-        write_random_file(256, &mut f1).expect("cant write to file in test");
+        let mut f1 = NamedTempFile::new().unwrap();
+        write_random_file(256, &mut f1).unwrap();
 
-        let mut f2 = tempfile().expect("cannot create tempfile in test");
-        write_random_file(256, &mut f2).expect("cant write to file in test");
+        let mut f2 = NamedTempFile::new().unwrap();
+        write_random_file(256, &mut f2).unwrap();
 
-        let f1_hash = calculate_file_digest_buffered(&mut f1).expect("cant hash file");
-        let f2_hash = calculate_file_digest_buffered(&mut f2).expect("cant hash file");
+        let f1_hash = calculate_file_digest_buffered(f1.path()).unwrap();
+        let f2_hash = calculate_file_digest_buffered(f2.path()).unwrap();
 
         assert_ne!(f1_hash, f2_hash);
     }
-    //4. test that a slightly changed file has a different hash
+    //test that a slightly changed file has a different hash
     #[test]
     fn test_rotted_file_hash() {
-        let mut tf = tempfile::NamedTempFile::new().unwrap();
-
+        let mut tf = NamedTempFile::new().unwrap();
         write_random_file(256, &mut tf).unwrap();
+        let digest1 = calculate_file_digest_buffered(tf.path()).unwrap();
 
-        let tf_path = tf.path().to_str().unwrap();
-        let mut tf_r = fs::File::open(tf_path).unwrap();
-        let digest1 = calculate_file_digest_buffered(&mut tf_r).unwrap();
-
-        rot_file(tf_path).unwrap();
-
-        let mut tf_r = fs::File::open(tf_path).unwrap();
-        // // file_r.seek(SeekFrom::Start(0)).unwrap();
-        let digest2 = calculate_file_digest_buffered(&mut tf_r).unwrap();
-
-        println!("a: {}", digest1);
-        println!("b: {}", digest2);
+        rot_file(&PathBuf::from(tf.path())).unwrap();
+        let digest2 = calculate_file_digest_buffered(tf.path()).unwrap();
 
         assert_ne!(digest1, digest2);
     }
-    //5. test that we can detect a file without the custom xattr
+
+    //test that we can detect a file without the custom xattr
     #[test]
     fn test_file_without_xattr() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let xattr_value = xattr::get(file.path(), HASH_XATTR).unwrap();
-        assert!(xattr_value.is_none());
-    }
-    //6. test that we can detect a file with the custom xattr
-    #[test]
-    fn test_file_with_xattr() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        xattr::set(file.path(), HASH_XATTR, b"test").unwrap();
-        let xattr_value = xattr::get(file.path(), HASH_XATTR).unwrap();
-        assert!(xattr_value.is_some());
+        let file = NamedTempFile::new().unwrap();
+        let xattr_value = get_xattr(file.path(), HASH_XATTR);
+        assert!(xattr_value.is_empty());
     }
 
-    //7. test that it can differentiate rotten vs. written files
+    //test that we can detect a file with the custom xattr
     #[test]
-    fn detects_modified_files() {}
-    //8. test that it can traverse directories shallowly
+    fn test_file_with_xattr() {
+        let file = NamedTempFile::new().unwrap();
+        xattr::set(file.path(), HASH_XATTR, b"test").unwrap();
+        let xattr_value = get_xattr(file.path(), HASH_XATTR);
+        assert!(!xattr_value.is_empty());
+    }
+
+    fn add_secs(timestamp: &str, secs: i64) -> String {
+        use chrono::{DateTime, Local, NaiveDateTime, Utc};
+        let mut timestamp = timestamp.parse::<i64>().unwrap_or_default();
+        timestamp += secs;
+        let dt = DateTime::<Utc>::from_utc(
+            NaiveDateTime::from_timestamp_opt(timestamp, 0).unwrap(),
+            Utc,
+        );
+        let dt: DateTime<Local> = DateTime::from(dt);
+        format!("{}", dt.format("%Y%m%d%H%M"))
+    }
+
+    //test that check() detects written files
     #[test]
-    fn traverses_dirs_shallow() {}
-    //9. test that it can traverse directories recursively
+    fn detects_modified_files() {
+        let mut file = NamedTempFile::new().unwrap();
+        write_random_file(256, &mut file).unwrap();
+        check(file.path(), false).unwrap();
+
+        rot_file(file.path()).unwrap();
+
+        let saved_timestamp = get_xattr(file.path(), MODIFIED_XATTR);
+        let new_timestamp = add_secs(&saved_timestamp, 1_000_000);
+
+        std::process::Command::new("touch")
+            .arg("-t")
+            .arg(&new_timestamp)
+            .arg(file.path())
+            .output()
+            .unwrap();
+
+        let status = check(file.path(), false).unwrap();
+        assert_eq!(status, FileStatus::Modified);
+    }
+
+    // test that check() detects rotten files
     #[test]
-    fn traverses_dirs_recursive() {}
+    fn detects_rotten_files() {
+        let mut file = NamedTempFile::new().unwrap();
+        write_random_file(256, &mut file).unwrap();
+        check(file.path(), false).unwrap();
+
+        rot_file(file.path()).unwrap();
+
+        let saved_timestamp = get_xattr(file.path(), MODIFIED_XATTR);
+        let new_timestamp = add_secs(&saved_timestamp, -1_000_000);
+
+        std::process::Command::new("touch")
+            .arg("-t")
+            .arg(&new_timestamp)
+            .arg(file.path())
+            .output()
+            .unwrap();
+
+        let status = check(file.path(), false).unwrap();
+        assert_eq!(status, FileStatus::Rotten);
+    }
+
+    //test that it can traverse directories shallowly
+    #[test]
+    fn traverses_dirs_shallow() {
+        let dir = tempdir().unwrap();
+        fs::File::create(dir.path().join("a")).unwrap();
+        fs::File::create(dir.path().join("b")).unwrap();
+        fs::create_dir(dir.path().join("c")).unwrap();
+        fs::File::create(dir.path().join("c").join("a")).unwrap();
+        let mut files = traverse_dir(dir.path(), false).unwrap();
+        let mut result = vec![dir.path().join("a"), dir.path().join("b")];
+        files.sort();
+        result.sort();
+        assert_eq!(files, result);
+    }
+    // test that it can traverse directories recursively
+    #[test]
+    fn traverses_dirs_recursive() {
+        let dir = tempdir().unwrap();
+        fs::File::create(dir.path().join("a")).unwrap();
+        fs::File::create(dir.path().join("b")).unwrap();
+        fs::create_dir(dir.path().join("c")).unwrap();
+        fs::File::create(dir.path().join("c").join("a")).unwrap();
+        let mut files = traverse_dir(dir.path(), true).unwrap();
+        let mut result = vec![
+            dir.path().join("a"),
+            dir.path().join("b"),
+            dir.path().join("c").join("a"),
+        ];
+        files.sort();
+        result.sort();
+        assert_eq!(files, result)
+    }
 
     fn calculate_file_digest<T: Read + Seek>(file: &mut T) -> Result<String, Box<dyn Error>> {
         file.seek(SeekFrom::Start(0)).unwrap();
@@ -491,7 +576,10 @@ mod tests {
         Ok(())
     }
 
-    fn rot_file(path: &str) -> Result<(), Box<dyn Error>> {
+    fn rot_file(path: &Path) -> Result<(), Box<dyn Error>> {
+        let saved_hash = get_xattr(path, HASH_XATTR);
+        let saved_mod = get_xattr(path, MODIFIED_XATTR);
+
         let mut rng = rand::thread_rng();
         let mut file = std::fs::File::open(path)?;
         let file_middle_byte = fs::metadata(path).unwrap().len() / 2;
@@ -518,7 +606,10 @@ mod tests {
                 writer.write_all(&buffer[..bytes_read])?;
             }
         }
+
         fs::rename(tf_path, path)?;
+        xattr::set(path, HASH_XATTR, saved_hash.as_bytes())?;
+        xattr::set(path, MODIFIED_XATTR, saved_mod.as_bytes())?;
         Ok(())
     }
 }
