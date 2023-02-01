@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn test_buffered_file_read_hash() {
         let mut file = NamedTempFile::new().unwrap();
-        write_random_file(256, &mut file).unwrap();
+        write_random_file(256, file.path()).unwrap();
 
         let buffered = calculate_file_digest_buffered(file.path()).unwrap();
         let non_buffered = calculate_file_digest(&mut file).unwrap();
@@ -409,11 +409,11 @@ mod tests {
     //test that two different files have different hashes
     #[test]
     fn test_different_files_hash() {
-        let mut f1 = NamedTempFile::new().unwrap();
-        write_random_file(256, &mut f1).unwrap();
+        let f1 = NamedTempFile::new().unwrap();
+        write_random_file(256, f1.path()).unwrap();
 
-        let mut f2 = NamedTempFile::new().unwrap();
-        write_random_file(256, &mut f2).unwrap();
+        let f2 = NamedTempFile::new().unwrap();
+        write_random_file(256, f2.path()).unwrap();
 
         let f1_hash = calculate_file_digest_buffered(f1.path()).unwrap();
         let f2_hash = calculate_file_digest_buffered(f2.path()).unwrap();
@@ -423,8 +423,8 @@ mod tests {
     //test that a slightly changed file has a different hash
     #[test]
     fn test_rotted_file_hash() {
-        let mut tf = NamedTempFile::new().unwrap();
-        write_random_file(256, &mut tf).unwrap();
+        let tf = NamedTempFile::new().unwrap();
+        write_random_file(256, tf.path()).unwrap();
         let digest1 = calculate_file_digest_buffered(tf.path()).unwrap();
 
         rot_file(&PathBuf::from(tf.path())).unwrap();
@@ -465,8 +465,8 @@ mod tests {
     //test that check() detects written files
     #[test]
     fn detects_modified_files() {
-        let mut file = NamedTempFile::new().unwrap();
-        write_random_file(256, &mut file).unwrap();
+        let file = NamedTempFile::new().unwrap();
+        write_random_file(256, file.path()).unwrap();
         check(file.path(), false).unwrap();
 
         rot_file(file.path()).unwrap();
@@ -488,8 +488,8 @@ mod tests {
     // test that check() detects rotten files
     #[test]
     fn detects_rotten_files() {
-        let mut file = NamedTempFile::new().unwrap();
-        write_random_file(256, &mut file).unwrap();
+        let file = NamedTempFile::new().unwrap();
+        write_random_file(256, file.path()).unwrap();
         check(file.path(), false).unwrap();
 
         rot_file(file.path()).unwrap();
@@ -541,6 +541,86 @@ mod tests {
         assert_eq!(files, result)
     }
 
+    #[test]
+    fn check_bad_permissions() {
+        let file = NamedTempFile::new().unwrap();
+        let mut perms = fs::metadata(file.path()).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(file.path(), perms).unwrap();
+        let status = check(file.path(), false).unwrap();
+        assert_eq!(status, FileStatus::BadPermissions);
+    }
+
+    #[test]
+    fn check_hardlink() {
+        let file = NamedTempFile::new().unwrap();
+        write_random_file(256, file.path()).unwrap();
+        let tmp = NamedTempFile::new().unwrap();
+        let link_path = tmp.path();
+        fs::remove_file(tmp.path()).unwrap();
+
+        fs::hard_link(file.path(), link_path).unwrap();
+
+        let status = check(link_path, false).unwrap();
+        assert_eq!(
+            status,
+            FileStatus::Ok(String::from(
+                "File has no hash saved. Calculating and storing now."
+            ))
+        );
+
+        write_random_file(256, file.path()).unwrap();
+
+        let saved_timestamp = get_xattr(link_path, MODIFIED_XATTR);
+        let new_timestamp = add_secs(&saved_timestamp, 1_000_000);
+        std::process::Command::new("touch")
+            .arg("-t")
+            .arg(&new_timestamp)
+            .arg(file.path())
+            .output()
+            .unwrap();
+
+        let status = check(link_path, false).unwrap();
+        fs::remove_file(link_path).unwrap();
+        file.close().unwrap();
+        assert_eq!(status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn check_softlink() {
+        let file = NamedTempFile::new().unwrap();
+        write_random_file(256, file.path()).unwrap();
+        let tmp = NamedTempFile::new().unwrap();
+        let link_path = tmp.path();
+        fs::remove_file(tmp.path()).unwrap();
+
+        std::os::unix::fs::symlink(file.path(), link_path).unwrap();
+
+        let status = check(&PathBuf::from(link_path), false).unwrap();
+        assert_eq!(
+            status,
+            FileStatus::Ok(String::from(
+                "File has no hash saved. Calculating and storing now."
+            ))
+        );
+
+        rot_file(file.path()).unwrap();
+
+        let saved_timestamp = get_xattr(file.path(), MODIFIED_XATTR);
+        let new_timestamp = add_secs(&saved_timestamp, 1_000_000);
+        std::process::Command::new("touch")
+            .arg("-t")
+            .arg(&new_timestamp)
+            .arg(file.path())
+            .output()
+            .unwrap();
+
+        let status = check(link_path, false).unwrap();
+        assert_eq!(status, FileStatus::Modified);
+
+        fs::remove_file(link_path).unwrap();
+    }
+
     fn calculate_file_digest<T: Read + Seek>(file: &mut T) -> Result<String, Box<dyn Error>> {
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut bytes = Vec::new();
@@ -568,11 +648,11 @@ mod tests {
         Ok(format!("{:x}", digest))
     }
 
-    fn write_random_file<T: Write>(num_bytes: usize, file: &mut T) -> Result<(), Box<dyn Error>> {
+    fn write_random_file(num_bytes: usize, path: &Path) -> Result<(), Box<dyn Error>> {
         let mut rng = rand::thread_rng();
         let bytes: Vec<u8> = (0..num_bytes).map(|_| rng.gen_range(32..126)).collect();
+        let mut file = fs::File::create(path).unwrap();
         file.write_all(&bytes)?;
-
         Ok(())
     }
 
