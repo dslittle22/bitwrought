@@ -11,7 +11,7 @@ use std::process::exit;
 use std::time::UNIX_EPOCH;
 use xattr::SUPPORTED_PLATFORM;
 
-const BUFFER_SIZE: usize = 8;
+const BUFFER_SIZE: usize = 1024;
 const HASH_XATTR: &str = "com.bitwrought.hash";
 const MODIFIED_XATTR: &str = "com.bitwrought.modified";
 
@@ -211,37 +211,36 @@ fn clap_setup() -> Command {
         .author("Danny Little")
         .about("Detects changes in files and notifies of these changes when run.")
         .after_help(
-            "Bitwrought will look at each file passed to it, and checks if it has a hash saved.
-If it does, it recalculates the file's hash and compares it to the saved one.
-If not, it calculates a new one and saves it to the file in a custom xattr.
-If passed a directory, bitwrought will check each file with a shallow traversal.
-it does not check directories within the directory passed unless the --recursive option is used.",
+"Bitwrought stores file hashes and last modified timestamps as extended attributes on the file you point it toward. The next time you run it on those files, it will recalculate hashes based on the file contents and compare it with the saved values.
+
+If the hashes match, the data hasn't changed. If the hashes are different but the file metadata says it was modified after the previously saved value, the file was likely modified. If the hashes do not match but the file metadata says it was not modified after the value saved, the file may have suffered from bit rot.",
         )
         .arg(
             Arg::new("path")
                 .action(ArgAction::Append)
                 .required(true)
-                .help("One or more files or directories"),
+                .help("one or more files or directories"),
         )
         .arg(
             Arg::new("recursive")
                 .short('r')
                 .long("recursive")
                 .action(ArgAction::SetTrue)
-                .help("Check all files in the directory recursively"),
+                .help("check all files in the directory recursively"),
         )
         .arg(
             Arg::new("delete")
                 .short('d')
                 .long("delete")
                 .action(ArgAction::SetTrue)
-                .help("Delete hashes saved by bitwrought"),
+                .help("delete hash and timestamp xattrs saved by bitwrought"),
         )
         .arg(
             Arg::new("verbose")
                 .short('v')
                 .long("verbose")
-                .action(ArgAction::SetTrue),
+                .action(ArgAction::SetTrue)
+                .help("verbose output"),
         )
 }
 
@@ -649,10 +648,16 @@ mod tests {
     }
 
     fn write_random_file(num_bytes: usize, path: &Path) -> Result<(), Box<dyn Error>> {
-        let mut rng = rand::thread_rng();
-        let bytes: Vec<u8> = (0..num_bytes).map(|_| rng.gen_range(32..126)).collect();
+        let mut bytes_to_write = num_bytes as i64;
         let mut file = fs::File::create(path).unwrap();
-        file.write_all(&bytes)?;
+        let mut rng = rand::thread_rng();
+        let mut bytes: Vec<u8>;
+
+        while bytes_to_write > 0 {
+            bytes = (0..num_bytes).map(|_| rng.gen_range(32..126)).collect();
+            file.write_all(&bytes)?;
+            bytes_to_write -= BUFFER_SIZE as i64;
+        }
         Ok(())
     }
 
