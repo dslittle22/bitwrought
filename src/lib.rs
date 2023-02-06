@@ -5,7 +5,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::UNIX_EPOCH;
@@ -128,7 +128,7 @@ impl Display for FileStatus {
             Self::DoesNotExist => write!(f, "❗️ File does not exist."),
             Self::Modified => write!(f, "❕ File hashes do not match, but it looks like the file was modified. Recalculating hash and timestamp for modified file."),
             Self::Rotten => write!(f, "❗️ File hashes do not match, but it does NOT look like the file was modified. The file may be corrupt."),
-            Self::Ok(s) => write!(f, "✅ {}", s),
+            Self::Ok(s) => write!(f, "✅ {s}"),
         }
     }
 }
@@ -266,7 +266,7 @@ where
 
 fn calculate_file_digest_buffered(path: &Path) -> Result<String, Box<dyn Error>> {
     let mut file = fs::File::open(path)?;
-    file.seek(SeekFrom::Start(0))?;
+    file.rewind()?;
     let mut buffer = [0u8; BUFFER_SIZE];
     let mut hasher = Sha256::new();
 
@@ -276,7 +276,7 @@ fn calculate_file_digest_buffered(path: &Path) -> Result<String, Box<dyn Error>>
         hasher.update(&buffer[..bytes_read]);
     }
     let digest = hasher.finalize();
-    Ok(format!("{:x}", digest))
+    Ok(format!("{digest:x}"))
 }
 
 fn save_file_hash(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -621,7 +621,7 @@ mod tests {
     }
 
     fn calculate_file_digest<T: Read + Seek>(file: &mut T) -> Result<String, Box<dyn Error>> {
-        file.seek(SeekFrom::Start(0)).unwrap();
+        file.rewind().unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         let hash = Sha256::digest(bytes);
@@ -631,7 +631,7 @@ mod tests {
     fn calculate_file_digest_buf_reader<T: Read + Seek>(
         file: &mut T,
     ) -> Result<String, Box<dyn Error>> {
-        file.seek(SeekFrom::Start(0)).unwrap();
+        file.rewind().unwrap();
         let mut hasher = Sha256::new();
         let mut reader = BufReader::with_capacity(BUFFER_SIZE, file);
 
