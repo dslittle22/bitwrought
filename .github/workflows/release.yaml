@@ -1,8 +1,5 @@
 name: Release
 on: [workflow_call, workflow_dispatch]
-concurrency:
-  group: ${{ github.ref_name }}
-  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
