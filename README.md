@@ -37,7 +37,7 @@ Options:
 
 Q: If my file suffers from bit rot, why should you expect that the saved extended attributes remain intact?
 
-A: "APFS checksums its own metadata, but not user data"[^1], meaning that if a file suffers from bit rot, there is a high chance the extended attributes are fine.
+A: [APFS checksums its own metadata, but not user data](https://arstechnica.com/gadgets/2016/06/a-zfs-developers-analysis-of-the-good-and-bad-in-apples-new-apfs-file-system/3/), meaning that if a file suffers from bit rot, there is a high chance the extended attributes are fine.
 
 Q: How should I use bitwrought?
 
@@ -45,6 +45,4 @@ A: I think the best use case for bitwrought is for files that you care about tha
 
 Q: Is bitwrought fast?
 
-A: Reasonably, yes. It is only single threaded right now, which limits its speed. But on my local machine it takes a couple of minutes per gigabyte. All data reads are buffered, and changing the buffer size has surprisingly little impact on the speed of the program.
-
-[^1] https://arstechnica.com/gadgets/2016/06/a-zfs-developers-analysis-of-the-good-and-bad-in-apples-new-apfs-file-system/3/
+A: Reasonably, yes. It is only single threaded right now, which limits its speed. But on my local machine it takes a couple of minutes per gigabyte. All data reads are buffered so it can handle large files, and changing the buffer size has surprisingly little impact on the speed of the program.
