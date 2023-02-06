@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "A data integrity checker"
 readme = "README.md"
 repository = "https://github.com/dslittle22/bitwrought"
-keywords = ["cli", "data integrity", "bit rot", "checksum",]
+keywords = ["cli", "data-integrity", "bit-rot", "checksum",]
 categories = ["command-line-utilities"]
 edition = "2021"
 
