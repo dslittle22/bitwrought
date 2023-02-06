@@ -1,5 +1,8 @@
 name: Release
 on: [workflow_call, workflow_dispatch]
+concurrency:
+  group: ${{ github.ref_name }}
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -36,8 +39,8 @@ jobs:
       - name: Compress (mac)
         if: matrix.os == 'macos-latest'
         run: |
-          mv target/${{ matrix.target }}/release/bitrought ./bitwrought-${{ matrix.target }}
-          zip bitwrought-${{ matrix.target }}.zip target/${{ matrix.target }}/release/bitrought README.md
+          mv target/${{ matrix.target }}/release/bitwrought ./bitwrought-${{ matrix.target }}
+          zip bitwrought-${{ matrix.target }}.zip bitwrought-${{ matrix.target }} README.md
       # - name: Compress (linux)
       #   if: matrix.os == 'ubuntu-latest'
       #   run: |
