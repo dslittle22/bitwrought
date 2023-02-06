@@ -10,7 +10,11 @@ Preventing this requires two things: 1) a way to notify you that files have been
 
 # Installation
 
-TBD
+Head on over to the [Releases](https://github.com/dslittle22/bitwrought/releases) page and download the zip. It comes with this README as well. Then put the binary anywhere you like to put binaries.
+
+## For rust nerds
+
+You can also `cargo install bitwrought` if you have the necessary [tooling](https://www.rust-lang.org/tools/install).
 
 # Usage
 
