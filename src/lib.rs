@@ -68,9 +68,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         many_files_warning(all_filepaths.len());
     }
 
-    let mut result_strings: Vec<String> = Vec::new();
-
     for filepath in all_filepaths {
+        if verbose {
+            println!();
+        }
         let status = if delete {
             Ok(delete_xattrs(&filepath))
         } else {
@@ -80,20 +81,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         let filepath_str = filepath.to_str().unwrap_or_default();
         match status {
             Ok(file_status) => {
-                result_strings.push(format!("File \"{filepath_str}\": {file_status}"));
+                println!("File \"{filepath_str}\": {file_status}");
             }
             Err(err) => {
                 println!("Operating on file \"{filepath_str}\" caused an error: {err}");
             }
         }
-    }
-
-    if verbose {
-        println!();
-    }
-
-    for s in result_strings {
-        println!("{s}");
     }
 
     fn many_files_warning(num_files: usize) {
@@ -134,6 +127,7 @@ impl Display for FileStatus {
 }
 
 fn check(path: &Path, verbose: bool) -> Result<FileStatus, Box<dyn Error>> {
+    let status;
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(_) => return Ok(FileStatus::DoesNotExist),
@@ -146,40 +140,46 @@ fn check(path: &Path, verbose: bool) -> Result<FileStatus, Box<dyn Error>> {
     let saved_hash = get_xattr(path, HASH_XATTR);
 
     if saved_hash.is_empty() {
-        save_file_hash(path)?;
-        Ok(FileStatus::Ok(String::from(
-            "File has no hash saved. Calculating and storing now.",
-        )))
+        let hash = save_file_hash(path)?;
+        if verbose {
+            println!("File \"{}\" newly calculated hash: {hash}", path.display());
+        }
+        status = FileStatus::Ok(String::from(
+            "File had no hash saved. A new hash was calculated and saved.",
+        ))
     } else {
         let hash = calculate_file_digest_buffered(path)?;
+        let last_modified = get_last_modified(path)?;
+
         if verbose {
-            let path_str = path.display();
-            println!("File \"{path_str}\" hash previously saved: {saved_hash}");
-            println!("File \"{path_str}\" newly calculated hash: {hash}");
+            println!("File \"{}\" newly calculated hash: {hash}", path.display());
         }
 
         if saved_hash == hash {
-            Ok(FileStatus::Ok(String::from(
-                "File hash matches previously saved result.",
-            )))
+            status = FileStatus::Ok(String::from("File hash matches previously saved result."));
+            println!(
+                "Modified timestamp from file \"{}\" metadata: {last_modified}",
+                path.display()
+            );
         } else {
             let saved_timestamp = get_xattr(path, MODIFIED_XATTR);
-            let last_modified = get_last_modified(path)?;
-
             if verbose {
-                let path_str = path.display();
-                println!("Modified timestamp for file \"{path_str}\" previously saved in bitwrought: {saved_timestamp}");
-                println!("Modified timestamp from file \"{path_str}\" metadata: {last_modified}");
+                println!(
+                    "File \"{}\" hash previously saved: {saved_hash}",
+                    path.display()
+                );
+                println!("Modified timestamp for file \"{}\" previously saved in bitwrought: {saved_timestamp}", path.display());
             }
 
             if last_modified > saved_timestamp {
                 save_file_hash(path)?;
-                Ok(FileStatus::Modified)
+                status = FileStatus::Modified;
             } else {
-                Ok(FileStatus::Rotten)
+                status = FileStatus::Rotten;
             }
         }
     }
+    Ok(status)
 }
 
 fn delete_xattrs(path: &Path) -> FileStatus {
@@ -279,7 +279,7 @@ fn calculate_file_digest_buffered(path: &Path) -> Result<String, Box<dyn Error>>
     Ok(format!("{digest:x}"))
 }
 
-fn save_file_hash(path: &Path) -> Result<(), Box<dyn Error>> {
+fn save_file_hash(path: &Path) -> Result<String, Box<dyn Error>> {
     let hash = calculate_file_digest_buffered(path)?;
     xattr::set(path, HASH_XATTR, hash.as_bytes())?;
     let time = get_xattr(path, MODIFIED_XATTR);
@@ -287,7 +287,8 @@ fn save_file_hash(path: &Path) -> Result<(), Box<dyn Error>> {
         let last_modified = get_last_modified(path)?;
         xattr::set(path, MODIFIED_XATTR, last_modified.as_bytes())?;
     }
-    Ok(())
+    let v = Vec::from(hash.as_bytes());
+    Ok(String::from_utf8(v)?)
 }
 
 fn traverse_dir(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>, Box<dyn Error>> {
