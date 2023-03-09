@@ -111,7 +111,10 @@ enum FileStatus {
     BadPermissions,
     Modified,
     Rotten,
-    Ok(String),
+    NewHash,
+    HashMatch,
+    DeletedAll,
+    DeletedSome,
 }
 
 impl Display for FileStatus {
@@ -121,7 +124,10 @@ impl Display for FileStatus {
             Self::DoesNotExist => write!(f, "❗️ File does not exist."),
             Self::Modified => write!(f, "❕ File hashes do not match, but it looks like the file was modified. Recalculating hash and timestamp for modified file."),
             Self::Rotten => write!(f, "❗️ File hashes do not match, but it does NOT look like the file was modified. The file may be corrupt."),
-            Self::Ok(s) => write!(f, "✅ {s}"),
+            Self::NewHash => write!(f, "✅ File had no hash saved. A new hash was calculated and saved."),
+            Self::HashMatch => write!(f, "✅ File hash matches previously saved result."),
+            Self::DeletedAll => write!(f, "✅ Hash and timestamp xattrs successfully removed."),
+            Self::DeletedSome => write!(f, "✅ Hash and timestamp xattrs successfully removed, although some xattrs were not present."),
         }
     }
 }
@@ -144,9 +150,7 @@ fn check(path: &Path, verbose: bool) -> Result<FileStatus, Box<dyn Error>> {
         if verbose {
             println!("File \"{}\" newly calculated hash: {hash}", path.display());
         }
-        status = FileStatus::Ok(String::from(
-            "File had no hash saved. A new hash was calculated and saved.",
-        ))
+        status = FileStatus::NewHash;
     } else {
         let hash = calculate_file_digest_buffered(path)?;
         let last_modified = get_last_modified(path)?;
@@ -156,7 +160,7 @@ fn check(path: &Path, verbose: bool) -> Result<FileStatus, Box<dyn Error>> {
         }
 
         if saved_hash == hash {
-            status = FileStatus::Ok(String::from("File hash matches previously saved result."));
+            status = FileStatus::HashMatch;
             println!(
                 "Modified timestamp from file \"{}\" metadata: {last_modified}",
                 path.display()
@@ -195,13 +199,9 @@ fn delete_xattrs(path: &Path) -> FileStatus {
     let hash_result = xattr::remove(path, HASH_XATTR);
     let mod_result = xattr::remove(path, MODIFIED_XATTR);
     if hash_result.is_err() || mod_result.is_err() {
-        FileStatus::Ok(String::from(
-            "Hash and timestamp successfully removed, although some xattrs were not present.",
-        ))
+        FileStatus::DeletedSome
     } else {
-        FileStatus::Ok(String::from(
-            "Hash and timestamp xattrs successfully removed.",
-        ))
+        FileStatus::DeletedAll
     }
 }
 
@@ -562,12 +562,7 @@ mod tests {
         fs::hard_link(file.path(), link_path).unwrap();
 
         let status = check(link_path, false).unwrap();
-        assert_eq!(
-            status,
-            FileStatus::Ok(String::from(
-                "File has no hash saved. Calculating and storing now."
-            ))
-        );
+        assert_eq!(status, FileStatus::NewHash);
 
         write_random_file(256, file.path()).unwrap();
 
@@ -597,12 +592,7 @@ mod tests {
         std::os::unix::fs::symlink(file.path(), link_path).unwrap();
 
         let status = check(&PathBuf::from(link_path), false).unwrap();
-        assert_eq!(
-            status,
-            FileStatus::Ok(String::from(
-                "File has no hash saved. Calculating and storing now."
-            ))
-        );
+        assert_eq!(status, FileStatus::NewHash);
 
         rot_file(file.path()).unwrap();
 
