@@ -4,7 +4,7 @@ bitwrought is a file integrity checker written primarily for MacOS (but it _shou
 
 If the hashes match, the data hasn't changed. If the hashes are different but the file metadata says it was modified after the previously saved value, the file was likely modified. If the hashes do not match but the file metadata says it was not modified after the value saved, the file may have suffered from bit rot or data corruption.
 
-The name "bitwrought" is a pun: "bit rot" is when some data that was written to disk appears different when read later. This can happen for any number of reasons: the data could have been copied around on disk incorrectly, or physical degredation could have flipped some bits. In practice, this can be ruinous: your treasured photo or video library, for example, could suffer bit rot and be corrupted. You then unknowingly back up the corrupted library, overwriting any uncorrupted backups. At some point in the future, you try unsucessfully to open the library. The files, along with any backups, are corrupted.
+The name "bitwrought" is a pun: "bit rot" is when some data that was written to disk appears different when read later. This can happen for any number of reasons: the data could have been copied around on disk incorrectly, or physical degradation could have flipped some bits. In practice, this can be ruinous: your treasured photo or video library, for example, could suffer bit rot and be corrupted. You then unknowingly back up the corrupted library, overwriting any uncorrupted backups. At some point in the future, you try unsuccessfully to open the library. The files, along with any backups, are corrupted.
 
 Preventing this requires two things: 1) a way to notify you that files have been changed, and 2) a way to retrieve a backup from before the file changed. bitwrought fills the first role, and will tell you about the status of your files when you run it. bitwrought does NOT fill the second role: it doesn't make any backups of files. Are you wrought about your bits? Run bitwrought!
 
@@ -32,10 +32,14 @@ Arguments:
 Options:
   -r, --recursive  check all files in the directory recursively
   -d, --delete     delete hash and timestamp xattrs saved by bitwrought
-  -v, --verbose    verbose output
+  -v, --verbose    verbose output including hashes and timestamps
   -h, --help       Print help
   -V, --version    Print version
 ```
+
+# Support
+
+Bitwrought supports macOS. It is theoretically able to support Linux, but xattrs are not supported on the versions of NFS used in the GitHub actions (and ec2), so until I figure out another way to test bitwrought on Linux, I won't publish binaries for it. If you want to use bitwrought on Linux, let me know- maybe we can brainstorm a solution.
 
 # FAQ
 
